@@ -1,2 +1,0 @@
-# gameofcells
-cellServer_updated
