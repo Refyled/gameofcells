@@ -1,0 +1,60 @@
+<!-- public/front.html -->
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Mon Jeu Simplifié</title>
+    <style>
+      body { font-family: sans-serif; }
+      label { display: block; margin-top: 8px; }
+      pre { background: #eee; padding: 10px; display: inline-block; }
+    </style>
+  </head>
+
+  <body>
+    <h1>Créer / Recréer une Partie</h1>
+    <form action="/create" method="POST">
+      <label>Taille de la grille:
+        <input type="number" name="grid_size" value="10"/>
+      </label>
+      <label>Nb de vitamines:
+        <input type="number" name="number_of_vitamins" value="3"/>
+      </label>
+      <label>Nb de joueurs:
+        <input type="number" name="players_count" value="2"/>
+      </label>
+      <label>Poids initial:
+        <input type="number" name="start_weight" value="4"/>
+      </label>
+      <label>Temps (sec) entre chaque coup (0 => attend tous les joueurs):
+        <input type="number" name="time_between_moves" value="1"/>
+      </label>
+      <button type="submit">Créer la partie</button>
+    </form>
+
+    <h2>État de la partie</h2>
+    <pre id="stateInfo">(En attente...)</pre>
+
+    <script>
+      // Fonction qui va régulièrement chercher l'état côté serveur
+      async function refreshState() {
+        try {
+          const resp = await fetch('/state');
+          const data = await resp.json();
+          // data = { turn, grid, grid_size, timeBetweenMoves, players }
+
+          // On affiche l'état en JSON pour l'exemple
+          const txt = JSON.stringify(data, null, 2);
+          document.getElementById('stateInfo').textContent = txt;
+        } catch (err) {
+          console.error(err);
+        }
+      }
+
+      // On rafraîchit toutes les secondes
+      setInterval(refreshState, 1000);
+      // Premier rafraîchissement immédiat
+      refreshState();
+    </script>
+  </body>
+</html>
