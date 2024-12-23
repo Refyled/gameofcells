@@ -299,13 +299,24 @@ def compute_game_turn(grid_size, numberOfVit, original_grid, cells_moves):
                 merges[1] = (top2[0], top2[1] + top1[1])
                 merges.pop(0)
             else:
-                # tie
-                winner_idx = random.choice([0, 1])
-                loser_idx = 1 - winner_idx
-                winn = merges[winner_idx]
-                losr = merges[loser_idx]
-                merges[winner_idx] = (winn[0], winn[1] + losr[1])
-                merges.pop(loser_idx)
+                # tie handling with vitamins
+                p1 = top1[0]
+                p2 = top2[0]
+                if p1 == 'vitamin' and p2 != 'vitamin':
+                    winner = top2
+                elif p2 == 'vitamin' and p1 != 'vitamin':
+                    winner = top1
+                elif p1 == 'vitamin' and p2 == 'vitamin':
+                    # Both are vitamins, choose randomly
+                    winner = random.choice([top1, top2])
+                else:
+                    # Both non-vitamins, choose randomly
+                    winner = random.choice([top1, top2])
+                loser = top2 if winner == top1 else top1
+                winner = (winner[0], winner[1] + loser[1])
+                merges.remove(top1)
+                merges.remove(top2)
+                merges.append(winner)
 
         final_player, final_weight = merges[0]
 

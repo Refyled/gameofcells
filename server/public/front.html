@@ -1,60 +1,353 @@
-<!-- public/front.html -->
 <!DOCTYPE html>
 <html>
   <head>
-    <meta charset="UTF-8" />
-    <title>Mon Jeu Simplifié</title>
+    <meta charset="UTF-8"/>
+    <title>Cells Game - Main</title>
     <style>
-      body { font-family: sans-serif; }
-      label { display: block; margin-top: 8px; }
-      pre { background: #eee; padding: 10px; display: inline-block; }
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #2b2b2b; /* Fond sombre */
+        height: 100%;
+        width: 100%;
+        overflow: hidden;
+      }
+      #gameCanvas {
+        display: block;
+        margin: 0 auto;
+        background: #3f3f3f; /* Gris légèrement plus clair */
+      }
     </style>
   </head>
-
   <body>
-    <h1>Créer / Recréer une Partie</h1>
-    <form action="/create" method="POST">
-      <label>Taille de la grille:
-        <input type="number" name="grid_size" value="10"/>
-      </label>
-      <label>Nb de vitamines:
-        <input type="number" name="number_of_vitamins" value="3"/>
-      </label>
-      <label>Nb de joueurs:
-        <input type="number" name="players_count" value="2"/>
-      </label>
-      <label>Poids initial:
-        <input type="number" name="start_weight" value="4"/>
-      </label>
-      <label>Temps (sec) entre chaque coup (0 => attend tous les joueurs):
-        <input type="number" name="time_between_moves" value="1"/>
-      </label>
-      <button type="submit">Créer la partie</button>
-    </form>
+    <canvas id="gameCanvas"></canvas>
 
-    <h2>État de la partie</h2>
-    <pre id="stateInfo">(En attente...)</pre>
-
+    <!-- Assurez-vous que le serveur Socket.IO sert correctement le fichier socket.io.js -->
+    <script src="/socket.io/socket.io.js"></script>
     <script>
-      // Fonction qui va régulièrement chercher l'état côté serveur
-      async function refreshState() {
-        try {
-          const resp = await fetch('/state');
-          const data = await resp.json();
-          // data = { turn, grid, grid_size, timeBetweenMoves, players }
+      /**********************************************************
+       * CONFIGURATION DES COULEURS
+       **********************************************************/
+      const COLORS_PLAYERS = [
+        "#cc6666", // Rouge
+        "#b5bd68", // Vert
+        "#81a2be", // Bleu
+        "#de935f", // Orange
+        "#f0c674", // Jaune
+        "#8abeb7", // Cyan
+        "#85678f", // Violet
+        "#707880", // Gris
+        "#d54e53", // Autre rouge
+        "#e78c45", // Etc.
+      ];
+      const COLOR_VITAMIN = "#ffffff";
+      const COLOR_GRID    = "#999999"; // Gris plus clair pour la grille
+      const COLOR_BG      = "#3f3f3f"; // Fond du canvas
+      const COLOR_TEXT    = "#ffffff"; // Texte sur les cellules
 
-          // On affiche l'état en JSON pour l'exemple
-          const txt = JSON.stringify(data, null, 2);
-          document.getElementById('stateInfo').textContent = txt;
-        } catch (err) {
-          console.error(err);
+      /**********************************************************
+       * VARIABLES GLOBALES
+       **********************************************************/
+      let canvas, ctx;
+      let gridSize = 10;  // Taille par défaut de la grille, mise à jour via turnAnimation
+      let cellSize;
+
+      // Variables d'animation
+      let animationRequestId = null;
+      let animationStartTime = null;
+      let animationDuration = 2000; // Durée par défaut en ms
+
+      // Animation en cours
+      let currentMoveAnimation = null;
+
+      // Double buffering
+      let offscreenCanvas, offscreenCtx;
+
+      // Suivi de la taille actuelle de la grille pour éviter les redessins inutiles
+      let currentGridSize = gridSize;
+
+      /**********************************************************
+       * CONFIGURATION DE SOCKET.IO
+       **********************************************************/
+      const socket = io("http://localhost:3000");
+
+      socket.on("connect", () => {
+        console.log("Connecté via Socket.IO, ID=", socket.id);
+      });
+
+      /**
+       * Le serveur envoie un événement "turnAnimation" contenant :
+       * {
+       *   turn: <int>,
+       *   move_animation: [...],
+       *   grid_size: <int>,
+       *   timeBetweenMoves: <int>
+       * }
+       * Nous allons :
+       *   - Mettre à jour gridSize si nécessaire
+       *   - Calculer la durée = timeBetweenMoves * 1000
+       *   - Interrompre toute animation en cours et démarrer la nouvelle animation immédiatement
+       */
+      socket.on("turnAnimation", (data) => {
+        console.log("Reçu turnAnimation:", data);
+        const {
+          turn,
+          move_animation,
+          grid_size,
+          timeBetweenMoves
+        } = data;
+
+        // Mettre à jour la taille de la grille si nécessaire
+        if (typeof grid_size === 'number' && grid_size > 0) {
+          gridSize = grid_size;
+          // Redimensionner le canevas et redessiner la grille
+          resizeCanvas();
+        }
+
+        // Calculer la durée de l'animation
+        const newDuration = (typeof timeBetweenMoves === 'number' && timeBetweenMoves >= 0)
+          ? timeBetweenMoves * 1000
+          : 2000; // Valeur par défaut
+
+        // Annuler toute animation en cours
+        if (animationRequestId) {
+          cancelAnimationFrame(animationRequestId);
+          animationRequestId = null;
+        }
+
+        // Définir la nouvelle animation
+        currentMoveAnimation = move_animation;
+        animationDuration = newDuration;
+
+        // Démarrer la nouvelle animation
+        startAnimation();
+      });
+
+      /**********************************************************
+       * INITIALISATION DU CANVAS
+       **********************************************************/
+      function initCanvas() {
+        canvas = document.getElementById("gameCanvas");
+        ctx = canvas.getContext("2d");
+        ctx.imageSmoothingEnabled = false;
+
+        // Initialiser le canevas hors écran pour le double buffering
+        offscreenCanvas = document.createElement('canvas');
+        offscreenCtx = offscreenCanvas.getContext('2d');
+        offscreenCtx.imageSmoothingEnabled = false;
+
+        resizeCanvas();
+        window.addEventListener("resize", resizeCanvas);
+      }
+
+      function resizeCanvas() {
+        const size = window.innerHeight;
+        canvas.width = size;
+        canvas.height = size;
+        offscreenCanvas.width = size;
+        offscreenCanvas.height = size;
+
+        cellSize = size / gridSize;
+
+        // Redessiner les éléments statiques sur le canevas hors écran
+        drawBackgroundToOffscreen();
+        drawGridToOffscreen();
+
+        // Copier le canevas hors écran sur le canevas principal
+        drawStatic();
+      }
+
+      function drawBackgroundToOffscreen() {
+        offscreenCtx.fillStyle = COLOR_BG;
+        offscreenCtx.fillRect(0, 0, offscreenCanvas.width, offscreenCanvas.height);
+      }
+
+      function drawGridToOffscreen() {
+        cellSize = offscreenCanvas.height / gridSize;
+
+        offscreenCtx.strokeStyle = COLOR_GRID;
+        offscreenCtx.lineWidth = 1;
+
+        // Dessiner les lignes horizontales
+        for (let i = 0; i <= gridSize; i++) {
+          const y = i * cellSize;
+          offscreenCtx.beginPath();
+          offscreenCtx.moveTo(0, y);
+          offscreenCtx.lineTo(offscreenCanvas.width, y);
+          offscreenCtx.stroke();
+        }
+
+        // Dessiner les lignes verticales
+        for (let i = 0; i <= gridSize; i++) {
+          const x = i * cellSize;
+          offscreenCtx.beginPath();
+          offscreenCtx.moveTo(x, 0);
+          offscreenCtx.lineTo(x, offscreenCanvas.height);
+          offscreenCtx.stroke();
         }
       }
 
-      // On rafraîchit toutes les secondes
-      setInterval(refreshState, 1000);
-      // Premier rafraîchissement immédiat
-      refreshState();
+      function drawStatic() {
+        // Copier le canevas hors écran (fond + grille) sur le canevas principal
+        ctx.drawImage(offscreenCanvas, 0, 0);
+      }
+
+      /**********************************************************
+       * ANIMATION
+       **********************************************************/
+      function startAnimation() {
+        animationStartTime = Date.now();
+        requestAnimationFrame(animationLoop);
+      }
+
+      function animationLoop() {
+        const now = Date.now();
+        let t = (now - animationStartTime) / animationDuration; // [0..1]
+        if (t > 1) t = 1;
+
+        // Dessiner la frame à l'instant t
+        drawFrame(currentMoveAnimation, t);
+
+        if (t < 1) {
+          animationRequestId = requestAnimationFrame(animationLoop);
+        } else {
+          // Fin de l'animation
+          animationRequestId = null;
+        }
+      }
+
+      /**********************************************************
+       * CONVERSION HEX TO RGBA
+       **********************************************************/
+      /**
+       * Convertit une couleur hexadécimale en une chaîne RGBA.
+       * @param {string} hex - La couleur en hexadécimal (e.g., "#ff0000").
+       * @param {number} alpha - L'opacité (entre 0 et 1).
+       * @returns {string} - La couleur en format RGBA.
+       */
+      function hexToRGBA(hex, alpha) {
+        let r = 0, g = 0, b = 0;
+        if (hex.length === 4) {
+          r = parseInt(hex[1] + hex[1], 16);
+          g = parseInt(hex[2] + hex[2], 16);
+          b = parseInt(hex[3] + hex[3], 16);
+        } else if (hex.length === 7) {
+          r = parseInt(hex.substring(1, 3), 16);
+          g = parseInt(hex.substring(3, 5), 16);
+          b = parseInt(hex.substring(5, 7), 16);
+        }
+        return `rgba(${r},${g},${b},${alpha})`;
+      }
+
+      /**********************************************************
+       * DESSIN D'UNE FRAME
+       **********************************************************/
+      function drawFrame(moveAnimation, t) {
+        // Dessiner le fond et la grille depuis le canevas hors écran
+        drawStatic();
+
+        if (!moveAnimation) return;
+
+        // Trier les animations : les cellules qui ne meurent pas sont dessinées en dernier
+        const sortedAnimations = moveAnimation.slice().sort((a, b) => {
+          const aDies = a.result === 'dies_midway' || a.result === 'dies_arrival';
+          const bDies = b.result === 'dies_midway' || b.result === 'dies_arrival';
+          if (aDies && !bDies) return -1;
+          if (!aDies && bDies) return 1;
+          return 0;
+        });
+
+        // Calculer les poids min et max par joueur
+        const playerWeights = {};
+
+        sortedAnimations.forEach(anim => {
+          const player = anim.player || 'vitamin';
+          if (!playerWeights[player]) {
+            playerWeights[player] = { min: anim.weight, max: anim.weight };
+          } else {
+            if (anim.weight < playerWeights[player].min) {
+              playerWeights[player].min = anim.weight;
+            }
+            if (anim.weight > playerWeights[player].max) {
+              playerWeights[player].max = anim.weight;
+            }
+          }
+        });
+
+        sortedAnimations.forEach(anim => {
+          // Structure de l'animation : { origin_x, origin_y, weight, direction, player, result }
+          const ox = anim.origin_x;
+          const oy = anim.origin_y;
+
+          let dx = ox, dy = oy;
+          switch(anim.direction) {
+            case "up":  dy = oy - 1; break; // Supposant que y diminue vers le haut
+            case "down":    dy = oy + 1; break; 
+            case "left":  dx = ox - 1; break;
+            case "right": dx = ox + 1; break;
+            case "stay": default: break;
+          }
+
+          const px = ox + t * (dx - ox);
+          const py = oy + t * (dy - oy);
+
+          // Gérer la disparition
+          if (anim.result === "dies_midway") {
+            if (t >= 0.5) return; // Meurt à t=0.5
+          } else if (anim.result === "dies_arrival") {
+            if (t >= 1) return;   // Meurt à la fin
+          }
+
+          let color = COLOR_VITAMIN;
+          if (anim.player && anim.player !== "vitamin") {
+            const pnum = parseInt(anim.player.substring(1)) || 1;
+            color = COLORS_PLAYERS[(pnum - 1) % COLORS_PLAYERS.length];
+          }
+
+          // Calculer l'opacité
+          let opacity = 1.0; // Par défaut, opacité maximale
+          if (anim.player && anim.player !== 'vitamin') {
+            const player = anim.player;
+            const weights = playerWeights[player];
+            if (weights.max > weights.min) {
+              // Calculer proportion entre min et max
+              const proportion = (anim.weight - weights.min) / (weights.max - weights.min);
+              // Échelle linéaire de 0.35 à 1.0
+              opacity = 0.35 + proportion * (1.0 - 0.35);
+            } else {
+              // Si min et max sont égaux, opacité maximale
+              opacity = 1.0;
+            }
+          }
+
+          // Convertir la couleur en RGBA avec l'opacité calculée
+          const rgbaColor = (anim.player && anim.player !== 'vitamin') ? hexToRGBA(color, opacity) : color;
+
+          drawCell(px, py, anim.weight, rgbaColor);
+        });
+      }
+
+      /**********************************************************
+       * DESSIN D'UNE CELLULE
+       **********************************************************/
+      function drawCell(cx, cy, weight, color) {
+        const px = cx * cellSize;
+        const py = (gridSize - cy - 1) * cellSize; // Inversion de l'axe y pour aligner correctement
+
+        // Dessiner la cellule
+        ctx.fillStyle = color;
+        ctx.fillRect(px, py, cellSize, cellSize);
+
+        // Dessiner le poids (texte) sur la cellule
+        ctx.fillStyle = COLOR_TEXT;
+        ctx.font = Math.floor(cellSize * 0.6) + "px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(weight.toString(), px + cellSize / 2, py + cellSize / 2);
+      }
+
+      // Initialiser le canevas au chargement de la fenêtre
+      window.onload = initCanvas;
     </script>
   </body>
 </html>

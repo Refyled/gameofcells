@@ -2,50 +2,100 @@
 const express = require('express');
 const axios = require('axios');
 const path = require('path');
+const http = require('http'); // Pour créer un serveur HTTP brut
+const { Server } = require('socket.io');
 
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// 1) On crée un serveur HTTP Express, puis on attache Socket.IO
+const httpServer = http.createServer(app);
+const io = new Server(httpServer, {
+  cors: {
+    origin: "*",
+  },
+});
+
 // -----------------------------------------------------------------
 // 1) Servir les fichiers statiques de "public/"
 app.use(express.static('public'));
 
-// Rediriger la racine "/" vers "front.html"
+// Page principale => front.html
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'front.html'));
+});
+
+// Nouvelle page => settings.html
+app.get('/settings', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'settings.html'));
 });
 
 // -----------------------------------------------------------------
 // CONFIGURATION GLOBALE
 // -----------------------------------------------------------------
-const PYTHON_API = 'http://localhost:8000'; // URL de votre serveur Python
+const PYTHON_API = 'http://localhost:8000';
 
-// Variables pour la partie
 let currentGridSize = 10;
 let currentVitaminsCount = 3;
-let currentPlayers = [];   // Liste de joueurs type ['Alice', 'Bob']
+let currentPlayers = [];
 let startWeight = 4;
 let currentGrid = [];
 let currentTurnNumber = 0;
 let timeBetweenMoves = 0;
 
-// Permet de stocker les joueurs connectés "en attente" (avant le begin)
-let connectedPlayers = [];
-
-// Mouvements par tour
 let movesBuffer = {};
 let turnTimer = null;
 
+// On maintient la liste de joueurs "connectés" au WebSocket (optionnel)
+let connectedPlayers = [];
+
 // -----------------------------------------------------------------
-// FONCTIONS DE TOUR (inchangées)
+// SOCKET.IO : on gère les connexions
 // -----------------------------------------------------------------
+io.on('connection', (socket) => {
+  console.log("Un client s'est connecté (socket ID =", socket.id, ")");
+
+  socket.on('join', (data) => {
+    const { name } = data;
+    if (!connectedPlayers.includes(name)) {
+      connectedPlayers.push(name);
+      console.log(`Join via socket => ${name}`);
+      // On informe tous les clients
+      io.emit('playersList', connectedPlayers);
+    }
+  });
+
+  socket.on('disconnect', () => {
+    console.log(`Le client (socket ID=${socket.id}) s'est déconnecté`);
+    // Ici, on pourrait retirer un joueur si on voulait
+  });
+});
+
+// -----------------------------------------------------------------
+// FONCTIONS DE TOUR
+// -----------------------------------------------------------------
+function emitState() {
+  // Émet un événement "stateUpdate" si vous en avez besoin
+  // (facultatif si on n'utilise plus "stateUpdate")
+  io.emit('stateUpdate', {
+    turn: currentTurnNumber,
+    grid: currentGrid,
+    grid_size: currentGridSize,
+    timeBetweenMoves,
+    players: currentPlayers
+  });
+}
+
 function startTurn() {
   currentTurnNumber++;
   movesBuffer = {};
-
   console.log(`\n=== DÉBUT DU TOUR ${currentTurnNumber} === (timeBetweenMoves=${timeBetweenMoves})`);
 
+  // Notifier les clients (optionnel si on n'utilise plus stateUpdate)
+  emitState();
+
+  // Timer si timeBetweenMoves>0
   if (timeBetweenMoves > 0) {
     if (turnTimer) {
       clearTimeout(turnTimer);
@@ -64,6 +114,7 @@ async function endTurn() {
     turnTimer = null;
   }
 
+  // On compile tous les moves
   const allMoves = [];
   for (const playerName in movesBuffer) {
     allMoves.push(...movesBuffer[playerName]);
@@ -72,28 +123,35 @@ async function endTurn() {
   console.log(`=> Tour ${currentTurnNumber} : envoi de ${allMoves.length} moves au Python`);
 
   try {
-    const pythonResp = await axios.post(`${PYTHON_API}/moves`, { moves: allMoves });
+    // On envoie la liste de moves directement
+    const pythonResp = await axios.post(`${PYTHON_API}/moves`, allMoves);
+    // On suppose le Python renvoie : { move_animation, new_grid }
     const { move_animation, new_grid } = pythonResp.data;
 
     currentGrid = new_grid;
     console.log(`=> Tour ${currentTurnNumber} terminé, nouvelle grille reçue.`);
 
+    // On émet l'événement "turnAnimation" pour le front
+    io.emit('turnAnimation', {
+      turn: currentTurnNumber,
+      grid_size: currentGridSize,     // <-- On renvoie la taille
+      timeBetweenMoves: timeBetweenMoves, // <-- On renvoie le temps/coup
+      move_animation
+    });
+
+    // Lance le tour suivant
     startTurn();
   } catch (err) {
     console.error("Erreur compute_game_turn:", err);
-    // On relance quand même un nouveau tour
     startTurn();
   }
 }
 
 function checkIfAllPlayersHavePlayed() {
   if (timeBetweenMoves !== 0) return;
-
   let nbPlayed = 0;
   for (const p of currentPlayers) {
-    if (movesBuffer[p]) {
-      nbPlayed++;
-    }
+    if (movesBuffer[p]) nbPlayed++;
   }
   if (nbPlayed === currentPlayers.length) {
     console.log("=> Tous les joueurs ont joué, on termine le tour immédiatement.");
@@ -102,38 +160,27 @@ function checkIfAllPlayersHavePlayed() {
 }
 
 // -----------------------------------------------------------------
-// ROUTES
+// ROUTES HTTP
 // -----------------------------------------------------------------
 
-// 0) get /players => liste des joueurs connectés "pour la partie"
 app.get('/players', (req, res) => {
-  res.json({
-    connectedPlayers
-  });
+  res.json({ connectedPlayers });
 });
 
-// 1) POST /join => un joueur s'identifie par son nom
-//    body: { name: "Alice" }
 app.post('/join', (req, res) => {
   const { name } = req.body;
   if (!name) {
     return res.status(400).json({ error: "Missing 'name' field" });
   }
-
-  // Ajoute le joueur s'il n'y est pas déjà
   if (!connectedPlayers.includes(name)) {
     connectedPlayers.push(name);
-    console.log(`Nouveau joueur connecté: ${name}`);
+    io.emit('playersList', connectedPlayers);
   }
-  
   res.json({ message: "Player joined", players: connectedPlayers });
 });
 
-// 2) POST /begin => démarre la partie avec la liste de joueurs connectés
-//    body: { grid_size, number_of_vitamins, start_weight, time_between_moves }
 app.post('/begin', async (req, res) => {
   try {
-    // On récupère les paramètres
     const {
       grid_size,
       number_of_vitamins,
@@ -144,12 +191,11 @@ app.post('/begin', async (req, res) => {
     currentGridSize = parseInt(grid_size, 10) || 10;
     currentVitaminsCount = parseInt(number_of_vitamins, 10) || 3;
     startWeight = parseInt(sw, 10) || 4;
-    timeBetweenMoves = parseInt(tbm, 10) || 0;
+    timeBetweenMoves = tbm;
 
-    // Les joueurs de la partie sont ceux qui ont fait /join
-    currentPlayers = connectedPlayers.slice(); // clone
+    currentPlayers = [...connectedPlayers];
 
-    // On appelle /init du Python
+    // On appelle Python /init
     const initBody = {
       grid_size: currentGridSize,
       number_of_vitamins: currentVitaminsCount,
@@ -164,7 +210,7 @@ app.post('/begin', async (req, res) => {
 
     console.log(`Partie BEGIN: grille=${currentGridSize}, vitamins=${currentVitaminsCount}, players=${currentPlayers}, TBM=${timeBetweenMoves}`);
     
-    // On lance le premier tour
+    // Lance le premier tour
     startTurn();
 
     res.json({ message: "Game started", grid: currentGrid });
@@ -174,7 +220,6 @@ app.post('/begin', async (req, res) => {
   }
 });
 
-// 3) POST /moves => un joueur envoie ses coups
 app.post('/moves', (req, res) => {
   try {
     const { player, turn } = req.body;
@@ -193,7 +238,6 @@ app.post('/moves', (req, res) => {
     if (timeBetweenMoves === 0) {
       checkIfAllPlayersHavePlayed();
     }
-
     res.json({ message: "Moves enregistrés" });
   } catch (err) {
     console.error(err);
@@ -201,7 +245,6 @@ app.post('/moves', (req, res) => {
   }
 });
 
-// 4) GET /state => renvoie l'état courant
 app.get('/state', (req, res) => {
   res.json({
     turn: currentTurnNumber,
@@ -213,9 +256,7 @@ app.get('/state', (req, res) => {
 });
 
 // -----------------------------------------------------------------
-// LANCEMENT DU SERVEUR
-// -----------------------------------------------------------------
 const PORT = 3000;
-app.listen(PORT, () => {
-  console.log(`Serveur Node lancé sur http://localhost:${PORT}`);
+httpServer.listen(PORT, () => {
+  console.log(`Serveur Node+Socket.IO lancé sur http://localhost:${PORT}`);
 });

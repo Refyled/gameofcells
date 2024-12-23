@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Paramètres de la partie</title>
+</head>
+<body>
+  <h1>Paramètres</h1>
+  <form id="form-begin">
+    <label>
+      Taille de la grille:
+      <input type="number" name="grid_size" value="10" min="1" step="1"/>
+    </label>
+    <br/>
+    <label>
+      Nombre de vitamines:
+      <input type="number" name="number_of_vitamins" value="3" min="0" step="1"/>
+    </label>
+    <br/>
+    <label>
+      Poids initial:
+      <input type="number" name="start_weight" value="4" min="0" step="1"/>
+    </label>
+    <br/>
+    <label>
+      Temps entre chaque coup:
+      <input type="number" name="time_between_moves" value="1" min="0" step="any"/>
+    </label>
+    <br/>
+    <button type="submit">BEGIN</button>
+  </form>
+
+  <script>
+    document.getElementById('form-begin').addEventListener('submit', async e => {
+      e.preventDefault();
+      const formData = new FormData(e.target);
+      const body = {
+        grid_size: Number(formData.get('grid_size')),
+        number_of_vitamins: Number(formData.get('number_of_vitamins')),
+        start_weight: Number(formData.get('start_weight')),
+        time_between_moves: Number(formData.get('time_between_moves'))
+      };
+      try {
+        const resp = await fetch('/begin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const data = await resp.json();
+        console.log("Réponse /begin:", data);
+        // redirection vers la page principale, si vous le souhaitez
+        window.location.href = '/';
+      } catch(err) {
+        console.error("Erreur /begin:", err);
+      }
+    });
+  </script>
+</body>
+</html>
