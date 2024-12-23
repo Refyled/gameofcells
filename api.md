@@ -1,4 +1,3 @@
-Certainly! Here's the revised markdown with all explanations in English and corrected presentation:
 
 ---
 
