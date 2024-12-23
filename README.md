@@ -112,4 +112,4 @@ For more details, check api.md
 
 ---
 
-   
+python -m uvicorn server:app --reload
