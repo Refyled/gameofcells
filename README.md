@@ -34,9 +34,6 @@ The Python backend is responsible for processing game logic, including move vali
 - **`package.json`**: Node.js project dependencies.
 - **`.gitignore`**: Specifies files and directories to exclude from version control.
 
----
-
-Certainly! Here's a concise summary of all the API endpoints and Socket.IO events categorized by `server.py` and `server.js`:
 
 ---
 
